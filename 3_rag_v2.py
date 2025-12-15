@@ -1,48 +1,52 @@
-# pip install -U langchain langchain-openai langchain-community faiss-cpu pypdf python-dotenv langsmith
-
 import os
 from dotenv import load_dotenv
-
-from langsmith import traceable  # <-- key import
+from langsmith import traceable
 
 from langchain_community.document_loaders import PyPDFLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+# FREE local embeddings (Gemini embeddings ❌)
+from langchain_community.embeddings import HuggingFaceEmbeddings
+
 from langchain_community.vectorstores import FAISS
+from langchain_google_genai import ChatGoogleGenerativeAI
+
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnableParallel, RunnablePassthrough, RunnableLambda
+from langchain_core.runnables import (
+    RunnableParallel,
+    RunnablePassthrough,
+    RunnableLambda
+)
 from langchain_core.output_parsers import StrOutputParser
 
-# --- LangSmith env (make sure these are set) ---
-# LANGCHAIN_TRACING_V2=true
-# LANGCHAIN_API_KEY=...
-# LANGCHAIN_PROJECT=pdf_rag_demo
 
 load_dotenv()
 
-PDF_PATH = "islr.pdf"  # change to your file
+PDF_PATH = "islr.pdf"
 
-# ---------- traced setup steps ----------
+# ----------------- TRACED SETUP STEPS -----------------
+
 @traceable(name="load_pdf")
 def load_pdf(path: str):
     loader = PyPDFLoader(path)
-    return loader.load()  # list[Document]
+    return loader.load()
 
 @traceable(name="split_documents")
 def split_documents(docs, chunk_size=1000, chunk_overlap=150):
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size, chunk_overlap=chunk_overlap
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap
     )
     return splitter.split_documents(docs)
 
 @traceable(name="build_vectorstore")
 def build_vectorstore(splits):
-    emb = OpenAIEmbeddings(model="text-embedding-3-small")
-    # FAISS.from_documents internally calls the embedding model:
-    vs = FAISS.from_documents(splits, emb)
+    embeddings = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    )
+    vs = FAISS.from_documents(splits, embeddings)
     return vs
 
-# You can also trace a “setup” umbrella span if you want:
 @traceable(name="setup_pipeline")
 def setup_pipeline(pdf_path: str):
     docs = load_pdf(pdf_path)
@@ -50,8 +54,14 @@ def setup_pipeline(pdf_path: str):
     vs = build_vectorstore(splits)
     return vs
 
-# ---------- pipeline ----------
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+
+# ----------------- RAG PIPELINE -----------------
+
+llm = ChatGoogleGenerativeAI(
+    model="gemini-2.5-flash",
+    temperature=0,
+    api_key=os.getenv("GEMINI_API_KEY")
+)
 
 prompt = ChatPromptTemplate.from_messages([
     ("system", "Answer ONLY from the provided context. If not found, say you don't know."),
@@ -61,9 +71,14 @@ prompt = ChatPromptTemplate.from_messages([
 def format_docs(docs):
     return "\n\n".join(d.page_content for d in docs)
 
-# Build the index under traced setup
+
+# Build vectorstore (traced)
 vectorstore = setup_pipeline(PDF_PATH)
-retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 4})
+
+retriever = vectorstore.as_retriever(
+    search_type="similarity",
+    search_kwargs={"k": 4}
+)
 
 parallel = RunnableParallel({
     "context": retriever | RunnableLambda(format_docs),
@@ -72,13 +87,16 @@ parallel = RunnableParallel({
 
 chain = parallel | prompt | llm | StrOutputParser()
 
-# ---------- run a query (also traced) ----------
-print("PDF RAG ready. Ask a question (or Ctrl+C to exit).")
+
+# ----------------- RUN QUERY (TRACED) -----------------
+
+print("📄 PDF RAG ready. Ask a question (Ctrl+C to exit).")
 q = input("\nQ: ").strip()
 
-# Give the visible run name + tags/metadata so it’s easy to find:
 config = {
-    "run_name": "pdf_rag_query"
+    "run_name": "pdf_rag_query",
+    "tags": ["rag", "pdf", "gemini"],
+    "metadata": {"pdf": PDF_PATH}
 }
 
 ans = chain.invoke(q, config=config)
