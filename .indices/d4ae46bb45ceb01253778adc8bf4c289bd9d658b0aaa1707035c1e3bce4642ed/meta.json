@@ -1,0 +1,6 @@
+{
+  "pdf_path": "C:\\Users\\aksha\\OneDrive\\Desktop\\langsmith-masterclass\\islr.pdf",
+  "chunk_size": 1000,
+  "chunk_overlap": 150,
+  "embedding_model": "all-MiniLM-L6-v2"
+}
